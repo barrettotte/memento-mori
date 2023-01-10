@@ -9,13 +9,14 @@
 #define DISPLAY_SDA D3
 #define DISPLAY_SCL D4
 
+// note: encoder inputs need to be debounced with 0.1µF caps
 #define ENCODER_CLK D5
 #define ENCODER_DT D6
 #define ENCODER_SW D7
 
-#define DEBOUNCE_MS 250
-#define NTP_INTERVAL_MS 30000
-#define DISPLAY_INTERVAL_MS 1000
+#define DEBOUNCE_MS 250          // default debounce input
+#define NTP_INTERVAL_MS 30000    // resync NTP every 30s
+#define DISPLAY_INTERVAL_MS 1000 // update time display once a second
 
 #define NTP_SERVER "time.nist.gov"
 
