@@ -3,7 +3,7 @@
 #define HOURGLASS_WIDTH 16
 #define HOURGLASS_HEIGHT 22
 #define HOURGLASS_BYTES_PER_ROW 2
-#define HOURGLASS_FRAMES 11
+#define HOURGLASS_FRAMES 12
 
 const uint8_t PROGMEM hourglassFrames[][HOURGLASS_HEIGHT * HOURGLASS_BYTES_PER_ROW] = {
     {   // frame 0

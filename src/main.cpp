@@ -124,7 +124,7 @@ void drawPage() {
             display.drawBitmap(
                 (DISPLAY_WIDTH / 2) - (HOURGLASS_WIDTH / 2),
                 (DISPLAY_HEIGHT / 2) - (HOURGLASS_HEIGHT / 2),
-                hourglassFrames[++hourglassIdx], HOURGLASS_WIDTH, HOURGLASS_HEIGHT, 1);
+                hourglassFrames[hourglassIdx++], HOURGLASS_WIDTH, HOURGLASS_HEIGHT, 1);
 
             if (hourglassIdx >= HOURGLASS_FRAMES) {
                 hourglassIdx = 0;
