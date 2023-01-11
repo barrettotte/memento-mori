@@ -15,9 +15,15 @@
 #define ENCODER_SW D7
 
 #define DEBOUNCE_MS 250          // default debounce input
-#define NTP_INTERVAL_MS 30000    // resync NTP every 30s
 #define DISPLAY_INTERVAL_MS 1000 // update time display once a second
 
-#define NTP_SERVER "time.nist.gov"
+#define UDP_PORT 8888
+#define NTP_WAIT_MS 3000
+#define NTP_SYNC_SECS 300
+const char* clockFormat = "%04d-%02d-%02d %02d:%02d:%02d"; // YYYY-MM-DD hh:mm:ss
+const char* ntpServer = "time.nist.gov";
 
-#define CONFIG_PATH "/config.json"
+const char* configPath = "/config.json";
+#define UTC_OFFSET_DEFAULT -5 // ETC
+#define BIRTH_DEFAULT 0
+#define DEATH_DEFAULT 0

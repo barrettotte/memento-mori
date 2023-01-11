@@ -6,17 +6,22 @@
 #include <LittleFS.h>
 #include <limits.h>
 #include <memory.h>
-#include <NTPClient.h>
 #include <SPI.h>
+#include <TimeLib.h>
 #include <WiFiUdp.h>
 #include <Wire.h>
 
 #include "config.h"
 #include "hourglass.h"
 
+#define CLOCK_BUFFER_SIZE 32
+#define NTP_PACKET_SIZE 48
+#define NTP_PORT 123
+
 #define errorHalt(s) Serial.println(s); while(1) {}
 
 enum state {
+    STATE_IDLE_TIME,  // show current date/time
     STATE_IDLE_YEAR,  // show year percentage
     STATE_IDLE_LIFE,  // show life percentage
     STATE_SHOW_UTC,   // display UTC offset setting
@@ -26,7 +31,6 @@ enum state {
     STATE_SET_UTC,    // set UTC offset
     STATE_SET_BIRTH,  // set birth date
     STATE_SET_DEATH,  // set estimated death date
-    STATE_SET_NTP,    // force resync time via NTP
 };
 
 enum direction {
@@ -45,9 +49,9 @@ struct range {
 };
 
 struct configuration {
-    // UTC offset
-    // birth
-    // death
+    int utcOffset;
+    time_t birth;
+    time_t death;
 };
 
 struct rotaryEncoder {
@@ -63,26 +67,96 @@ struct rotaryEncoder {
 
 configuration config;
 rotaryEncoder encoder;
-
 Adafruit_SSD1306 display(DISPLAY_WIDTH, DISPLAY_HEIGHT, &Wire, DISPLAY_RESET); // SDA,SCL
 
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, NTP_SERVER);
-time_t epochTime;
+WiFiUDP udp;
+byte packetBuffer[NTP_PACKET_SIZE];
+char clockBuffer[CLOCK_BUFFER_SIZE];
+uint8_t utcOffset;
 
-state prevState = STATE_IDLE_LIFE;
-state currState = STATE_IDLE_YEAR;
+state prevState = STATE_IDLE_YEAR;
+state currState = STATE_IDLE_TIME;
+time_t prevTimeDisplayed = 0;
 uint8_t hourglassIdx = 0;
 
 range pageRange;
-timer ntpTimer;
-timer updateDisplayTimer;
 
 unsigned long currMs = 0;
 
 /*** utilities ***/
 
-void resetScreen() {
+void printTime() {
+    Serial.printf(clockFormat, year(), month(), day(), hour(), minute(), second());
+    Serial.println();
+}
+
+uint8_t loadConfig() {
+    // TODO:
+    return 0;
+}
+
+void saveConfig() {
+    // TODO:
+}
+
+/*** NTP ***/
+
+void sendNtpPacket(IPAddress &ip) {
+    memset(packetBuffer, 0, NTP_PACKET_SIZE);
+    // https://www.meinbergglobal.com/english/info/ntp-packet.htm
+    packetBuffer[0] = 0b11100011; // Leap Indicator (LI), version, mode
+    packetBuffer[1] = 0;          // Stratum (type of clock) - 0=unspecified
+    packetBuffer[2] = 6;          // Poll interval
+    packetBuffer[3] = 0xEC;       // Precision
+                                  // 8 zero bytes -> Root Delay and Root Dispersion
+    packetBuffer[12] = 49;
+    packetBuffer[13] = 0x4E;
+    packetBuffer[14] = 49;
+    packetBuffer[15] = 52;
+
+    udp.beginPacket(ip, NTP_PORT);
+    udp.write(packetBuffer, NTP_PACKET_SIZE);
+    udp.endPacket();
+}
+
+time_t getNtpTime() {
+    IPAddress ntpServerIp;
+    Serial.println("Fetching time from NTP server.");
+
+    while (udp.parsePacket() > 0) {
+        // discard previously received packets
+    }
+
+    if (!WiFi.hostByName(ntpServer, ntpServerIp)) {
+        Serial.printf("Error: DNS lookup failed for NTP server %s\n", ntpServer);
+        return 0;
+    }
+    Serial.printf("%s:%s\n", ntpServer, ntpServerIp.toString().c_str());
+    sendNtpPacket(ntpServerIp);
+
+    uint32_t wait = millis();
+    while (millis() - wait < NTP_WAIT_MS) {
+        if (udp.parsePacket() >= NTP_PACKET_SIZE) {
+            udp.read(packetBuffer, NTP_PACKET_SIZE);
+
+            uint32_t t = (packetBuffer[40] << 24) | (packetBuffer[41] << 16)
+                       | (packetBuffer[42] << 8)  | (packetBuffer[43]);
+            return t - 2208988800UL + (config.utcOffset * SECS_PER_HOUR);
+        }
+    }
+    Serial.println("Error: Failed to get time from NTP server.");
+    return 0;
+}
+
+void resyncNtp() {
+    Serial.println("Resync NTP.");
+    setTime(getNtpTime());
+    printTime();
+}
+
+/*** display ***/
+
+void resetDisplay() {
     display.clearDisplay();
     display.setCursor(0, 0);
     display.setTextColor(WHITE);
@@ -102,48 +176,69 @@ void drawCenteredText(String text, bool horizontal, bool vertical) {
 }
 
 void drawTime() {
-    struct tm *t = gmtime((time_t *) &epochTime);
-    char buffer[32];
+    memset(clockBuffer, 0, CLOCK_BUFFER_SIZE);
+    sprintf(clockBuffer, clockFormat, year(), month(), day(), hour(), minute(), second());
+    drawCenteredText(clockBuffer, true, true);
+}
 
-    sprintf(buffer, "%04u-%02u-%02u %02u:%02u:%02u", 
-        (uint8_t) t->tm_year+1900, (uint8_t) t->tm_mon+1, (uint8_t) t->tm_mday, 
-        (uint8_t) t->tm_hour, (uint8_t) t->tm_min, (uint8_t) t->tm_sec);
+void drawHourglassAnimation() {
+    display.drawBitmap(
+        (DISPLAY_WIDTH / 2) - (HOURGLASS_WIDTH / 2),
+        (DISPLAY_HEIGHT / 2) - (HOURGLASS_HEIGHT / 2),
+        hourglassFrames[hourglassIdx++], HOURGLASS_WIDTH, HOURGLASS_HEIGHT, 1);
 
-    drawCenteredText(buffer, true, true);
+    if (hourglassIdx >= HOURGLASS_FRAMES) {
+        hourglassIdx = 0;
+    }
+}
+
+void drawYearProgressPage() {
+    drawCenteredText("Year Progress", true, false);
+    drawHourglassAnimation();
+}
+
+void drawLifeProgressPage() {
+    drawCenteredText("Life Progress", true, false);
+    drawHourglassAnimation();
 }
 
 void drawPage() {
-    resetScreen();
+    resetDisplay();
 
     switch (currState) {
-        case STATE_IDLE_YEAR:
+        case STATE_IDLE_TIME:
             drawTime();
             break;
+        case STATE_IDLE_YEAR:
+            drawYearProgressPage();
+            break;
         case STATE_IDLE_LIFE:
-            // drawCenteredText("Life Progress", false, true);
-            display.drawBitmap(
-                (DISPLAY_WIDTH / 2) - (HOURGLASS_WIDTH / 2),
-                (DISPLAY_HEIGHT / 2) - (HOURGLASS_HEIGHT / 2),
-                hourglassFrames[hourglassIdx++], HOURGLASS_WIDTH, HOURGLASS_HEIGHT, 1);
-
-            if (hourglassIdx >= HOURGLASS_FRAMES) {
-                hourglassIdx = 0;
-            }
+            drawLifeProgressPage();
             break;
         case STATE_SHOW_UTC:
-            drawCenteredText("UTC Offset", true, true);
+            drawCenteredText("UTC Offset", true, false);
             break;
         case STATE_SHOW_BIRTH:
-            drawCenteredText("Birth Date", true, true);
+            drawCenteredText("Birth Date", true, false);
             break;
         case STATE_SHOW_DEATH:
-            drawCenteredText("Estimated", true, true);
-            display.display();
-            display.setCursor(0, display.getCursorY()+1);
+            drawCenteredText("Estimated", true, false);
+            display.setCursor(0, display.getCursorY() + 1);
             drawCenteredText("Death Date", true, false);
             break;
         case STATE_SHOW_NTP:
-            drawCenteredText("NTP Refresh", true, true);
+            drawCenteredText("NTP Resync", true, true);
+            break;
+        case STATE_SET_UTC:
+            drawCenteredText("Set UTC Offset", true, false);
+            break;
+        case STATE_SET_BIRTH:
+            drawCenteredText("Set Birth Date", true, false);
+            break;
+        case STATE_SET_DEATH:
+            drawCenteredText("Set Estimated", true, false);
+            display.setCursor(0, display.getCursorY() + 1);
+            drawCenteredText("Death Date", true, false);
             break;
         default:
             Serial.printf("Warning: Unnecessary page draw for state %d\n", currState);
@@ -152,28 +247,9 @@ void drawPage() {
     display.display();
 }
 
-void resyncNTP() {
-    Serial.println("NTP resync.");
+/*** encoder ***/
 
-    timeClient.update();
-    epochTime = timeClient.getEpochTime();
-    struct tm *t = gmtime((time_t *)&epochTime);
-
-    Serial.printf("%d-%02d-%02d %d:%02d:%02d\n", 
-        t->tm_year+1900, t->tm_mon+1, t->tm_mday, 
-        t->tm_hour, t->tm_min, t->tm_sec);
-}
-
-uint8_t loadConfig() {
-    // TODO:
-    return 0;
-}
-
-void saveConfig() {
-    // TODO:
-}
-
-void handleEncoderMove() {
+void scrollPage() {
     if (digitalRead(ENCODER_DT) != encoder.currClk) {
         encoder.dir = CCW;
     } else {
@@ -194,8 +270,52 @@ void handleEncoderMove() {
     drawPage();
 }
 
+void handleEncoderMove() {
+    if (currState > 6) {
+        // change setting (UTC offset, birth, death)
+    } else {
+        scrollPage();
+    }
+}
+
 void handleEncoderPress() {
-    // TODO: settings
+    switch (currState) {
+        case STATE_SHOW_UTC:
+            Serial.println("Started editing UTC offset!");
+            currState = STATE_SET_UTC;
+            break;
+        case STATE_SHOW_BIRTH:
+            Serial.println("Started editing birth date!");
+            currState = STATE_SET_BIRTH;
+            break;
+        case STATE_SHOW_DEATH:
+            Serial.println("Started editing death date!");
+            currState = STATE_SET_DEATH;
+            break;
+        case STATE_SHOW_NTP:
+            resyncNtp();
+            currState = STATE_IDLE_TIME;
+            drawPage();
+            break;
+        case STATE_SET_UTC:
+            Serial.println("Done editing UTC offset!");
+            currState = STATE_SHOW_UTC;
+            break;
+        case STATE_SET_BIRTH:
+            Serial.println("Done editing birth date!");
+            currState = STATE_SHOW_BIRTH;
+            break;
+        case STATE_SET_DEATH:
+            Serial.println("Done editing death date!");
+            currState = STATE_SHOW_DEATH;
+            break;
+        default:
+            Serial.printf("Encoder pressed -> state=%d\n", currState);
+            break;
+    }
+    if (currState >= 3) {
+        drawPage();
+    }
 }
 
 /*** interrupts ***/
@@ -235,7 +355,8 @@ void initDisplay() {
         errorHalt("SSD1306 allocation failed.");
     }
     delay(250);
-    resetScreen();
+    resetDisplay();
+    display.display();
 }
 
 void initWifi() {
@@ -243,15 +364,21 @@ void initWifi() {
     WiFi.begin(_WIFI_SSID, _WIFI_PASS);
 
     Serial.printf("Connecting to WiFi [%s]", _WIFI_SSID);
-    display.printf("Connecting to WiFi\n  %s ...", _WIFI_SSID);
+    display.setCursor(0, 3);
+    display.printf("Connecting to WiFi\n\n%s\n\n...", _WIFI_SSID);
     display.display();
 
     while (WiFi.status() != WL_CONNECTED) {
         delay(1000);
         Serial.printf(".");
     }
-    Serial.println("IP => " + WiFi.localIP().toString());
-    display.clearDisplay();
+    Serial.printf("IP => %s\n", WiFi.localIP().toString().c_str());
+    
+    udp.begin(UDP_PORT);
+    Serial.printf("Local port: %d\n", udp.localPort());
+
+    resetDisplay();
+    display.display();
 }
 
 void initFs() {
@@ -263,16 +390,16 @@ void initFs() {
 
 void initConfig() {
     // TODO: read from file system
+    config.utcOffset = UTC_OFFSET_DEFAULT;
 }
 
 void initEncoder() {
     pinMode(ENCODER_CLK, INPUT_PULLUP);
-    attachInterrupt(ENCODER_CLK, encoderMove, CHANGE);
-
     pinMode(ENCODER_DT, INPUT_PULLUP);
-    attachInterrupt(ENCODER_DT, encoderMove, CHANGE);
-
     pinMode(ENCODER_SW, INPUT);
+
+    attachInterrupt(ENCODER_CLK, encoderMove, CHANGE);
+    attachInterrupt(ENCODER_DT, encoderMove, CHANGE);
     attachInterrupt(ENCODER_SW, encoderPress, FALLING);
 
     encoder.btn = {0, DEBOUNCE_MS};
@@ -291,44 +418,30 @@ void setup() {
     initConfig();
     initEncoder();
 
-    ntpTimer = {0, NTP_INTERVAL_MS};
-    updateDisplayTimer = {0, DISPLAY_INTERVAL_MS};
+    // NTP sync
+    setSyncProvider(getNtpTime);
+    setSyncInterval(NTP_SYNC_SECS);
 
-    pageRange = {STATE_IDLE_YEAR, STATE_SHOW_NTP};
+    // init globals
+    pageRange = {STATE_IDLE_TIME, STATE_SHOW_NTP};
 
-    timeClient.begin();
-    timeClient.setTimeOffset(-5 * 3600); 
-    // TODO: EST for now (UTC-05:00), need to load from config.json
-
-    resetScreen();
-    display.display();
-    resyncNTP();
     drawTime();
-
     pinMode(LED_BUILTIN, OUTPUT);
 }
 
 void loop() {
     currMs = millis();
 
-    // resync NTP to keep local time accurate
-    if ((currMs - ntpTimer.prevMs) >= ntpTimer.intervalMs) {
-        resyncNTP();
-        ntpTimer.prevMs = currMs;
+    if (timeStatus() != timeNotSet) {
+        if ((currState < 3) && now() != prevTimeDisplayed) {
+            prevTimeDisplayed = now();
+            drawPage();
+        }
     }
-
-    // keep local time updated
-    if ((currState == STATE_IDLE_YEAR || currState == STATE_IDLE_LIFE) && (currMs - updateDisplayTimer.prevMs) >= updateDisplayTimer.intervalMs) {
-        epochTime += 1; // advance one second for local time
-        drawPage();
-        updateDisplayTimer.prevMs = currMs;
-    }
-
     if (encoder.moved) {
         handleEncoderMove();
         encoder.moved = false;
     }
-
     if (encoder.pressed) {
         handleEncoderPress();
         encoder.pressed = false;
