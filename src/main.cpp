@@ -14,9 +14,11 @@
 #include "config.h"
 #include "hourglass.h"
 
-#define CLOCK_BUFFER_SIZE 32
+#define DISPLAY_BUFFER_SIZE 32
+#define CONFIG_BUFFER_SIZE 64
 #define NTP_PACKET_SIZE 48
 #define NTP_PORT 123
+#define CONFIG_JSON_CAPACITY JSON_OBJECT_SIZE(3) // 1 object with 3 members
 
 #define errorHalt(s) Serial.println(s); while(1) {}
 
@@ -71,7 +73,7 @@ Adafruit_SSD1306 display(DISPLAY_WIDTH, DISPLAY_HEIGHT, &Wire, DISPLAY_RESET); /
 
 WiFiUDP udp;
 byte packetBuffer[NTP_PACKET_SIZE];
-char clockBuffer[CLOCK_BUFFER_SIZE];
+char displayBuffer[DISPLAY_BUFFER_SIZE];
 uint8_t utcOffset;
 
 state prevState = STATE_IDLE_YEAR;
@@ -91,12 +93,34 @@ void printTime() {
 }
 
 uint8_t loadConfig() {
-    // TODO:
-    return 0;
+    int result = 0;
+    char configBuffer[CONFIG_BUFFER_SIZE];
+
+    File f = LittleFS.open(configPath, "r");
+    f.readBytes(configBuffer, CONFIG_BUFFER_SIZE);
+
+    StaticJsonDocument<CONFIG_JSON_CAPACITY> data;
+    DeserializationError err = deserializeJson(data, configBuffer);
+
+    if (err) {
+        Serial.printf("Error: JSON deserialize failed with code");
+        Serial.println(err.f_str());
+        result = -1;
+    } else {
+        config.utcOffset = data["utc"];
+        config.birth = data["birth"];
+        config.death = data["death"];
+    }
+    f.close();
+
+    return result;
 }
 
 void saveConfig() {
-    // TODO:
+    File f = LittleFS.open(configPath, "w");
+    f.printf("{\"utc\":%d,\"birth\":%lld,\"death\":%lld}", 
+        config.utcOffset, config.birth, config.death);
+    f.close();
 }
 
 /*** NTP ***/
@@ -176,9 +200,9 @@ void drawCenteredText(String text, bool horizontal, bool vertical) {
 }
 
 void drawTime() {
-    memset(clockBuffer, 0, CLOCK_BUFFER_SIZE);
-    sprintf(clockBuffer, clockFormat, year(), month(), day(), hour(), minute(), second());
-    drawCenteredText(clockBuffer, true, true);
+    memset(displayBuffer, 0, DISPLAY_BUFFER_SIZE);
+    sprintf(displayBuffer, clockFormat, year(), month(), day(), hour(), minute(), second());
+    drawCenteredText(displayBuffer, true, true);
 }
 
 void drawHourglassAnimation() {
@@ -202,6 +226,45 @@ void drawLifeProgressPage() {
     drawHourglassAnimation();
 }
 
+void drawUtcPage(bool edit) {
+    if (edit) {
+        drawCenteredText("Set UTC Offset", true, false);
+    } else {
+        drawCenteredText("UTC Offset", true, false);
+    }
+    memset(displayBuffer, 0, DISPLAY_BUFFER_SIZE);
+    sprintf(displayBuffer, "%d", config.utcOffset);
+    drawCenteredText(displayBuffer, true, true);
+}
+
+void drawBirthPage(bool edit) {
+    if (edit) {
+        drawCenteredText("Set Birth Date", true, false);
+    } else {
+        drawCenteredText("Birth Date", true, false);
+    }
+    memset(displayBuffer, 0, DISPLAY_BUFFER_SIZE);
+    // TODO: convert unix timestamp to date for display
+    sprintf(displayBuffer, "%lld", config.birth);
+    drawCenteredText(displayBuffer, true, true);
+}
+
+void drawDeathPage(bool edit) {
+    if (edit) {
+        drawCenteredText("Set Estimated", true, false);
+        display.setCursor(0, display.getCursorY() + 1);
+        drawCenteredText("Death Date", true, false);
+    } else {
+        drawCenteredText("Estimated", true, false);
+        display.setCursor(0, display.getCursorY() + 1);
+        drawCenteredText("Death Date", true, false);
+    }
+    memset(displayBuffer, 0, DISPLAY_BUFFER_SIZE);
+    // TODO: convert unix timestamp to date for display
+    sprintf(displayBuffer, "%lld", config.death);
+    drawCenteredText(displayBuffer, true, true);
+}
+
 void drawPage() {
     resetDisplay();
 
@@ -216,32 +279,25 @@ void drawPage() {
             drawLifeProgressPage();
             break;
         case STATE_SHOW_UTC:
-            drawCenteredText("UTC Offset", true, false);
+            drawUtcPage(false);
             break;
         case STATE_SHOW_BIRTH:
-            drawCenteredText("Birth Date", true, false);
+            drawBirthPage(false);
             break;
         case STATE_SHOW_DEATH:
-            drawCenteredText("Estimated", true, false);
-            display.setCursor(0, display.getCursorY() + 1);
-            drawCenteredText("Death Date", true, false);
+            drawDeathPage(false);
             break;
         case STATE_SHOW_NTP:
-            drawCenteredText("NTP Resync", true, true);
+            drawCenteredText("Force NTP Resync", true, true);
             break;
         case STATE_SET_UTC:
-            drawCenteredText("Set UTC Offset", true, false);
+            drawUtcPage(true);
             break;
         case STATE_SET_BIRTH:
-            drawCenteredText("Set Birth Date", true, false);
+            drawBirthPage(true);
             break;
         case STATE_SET_DEATH:
-            drawCenteredText("Set Estimated", true, false);
-            display.setCursor(0, display.getCursorY() + 1);
-            drawCenteredText("Death Date", true, false);
-            break;
-        default:
-            Serial.printf("Warning: Unnecessary page draw for state %d\n", currState);
+            drawDeathPage(true);
             break;
     }
     display.display();
@@ -272,7 +328,7 @@ void scrollPage() {
 
 void handleEncoderMove() {
     if (currState > 6) {
-        // change setting (UTC offset, birth, death)
+        // TODO: change setting (UTC offset, birth, death)
     } else {
         scrollPage();
     }
@@ -389,8 +445,13 @@ void initFs() {
 }
 
 void initConfig() {
-    // TODO: read from file system
     config.utcOffset = UTC_OFFSET_DEFAULT;
+    config.birth = BIRTH_DEFAULT;
+    config.death = DEATH_DEFAULT;
+
+    if (loadConfig()) {
+        errorHalt("Error occurred while loading config from file system.");
+    }
 }
 
 void initEncoder() {
