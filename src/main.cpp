@@ -12,8 +12,9 @@
 #include <Wire.h>
 
 #include "config.h"
+#include "hourglass.h"
 
-#define ERROR_HALT(s) Serial.println(s); while(1) {}
+#define errorHalt(s) Serial.println(s); while(1) {}
 
 enum state {
     STATE_IDLE_YEAR,  // show year percentage
@@ -71,6 +72,7 @@ time_t epochTime;
 
 state prevState = STATE_IDLE_LIFE;
 state currState = STATE_IDLE_YEAR;
+uint8_t hourglassIdx = 0;
 
 range pageRange;
 timer ntpTimer;
@@ -118,7 +120,15 @@ void drawPage() {
             drawTime();
             break;
         case STATE_IDLE_LIFE:
-            drawCenteredText("Life Progress", true, true);
+            // drawCenteredText("Life Progress", false, true);
+            display.drawBitmap(
+                (DISPLAY_WIDTH / 2) - (HOURGLASS_WIDTH / 2),
+                (DISPLAY_HEIGHT / 2) - (HOURGLASS_HEIGHT / 2),
+                hourglassFrames[++hourglassIdx], HOURGLASS_WIDTH, HOURGLASS_HEIGHT, 1);
+
+            if (hourglassIdx >= HOURGLASS_FRAMES) {
+                hourglassIdx = 0;
+            }
             break;
         case STATE_SHOW_UTC:
             drawCenteredText("UTC Offset", true, true);
@@ -127,7 +137,10 @@ void drawPage() {
             drawCenteredText("Birth Date", true, true);
             break;
         case STATE_SHOW_DEATH:
-            drawCenteredText("Death Date", true, true);
+            drawCenteredText("Estimated", true, true);
+            display.display();
+            display.setCursor(0, display.getCursorY()+1);
+            drawCenteredText("Death Date", true, false);
             break;
         case STATE_SHOW_NTP:
             drawCenteredText("NTP Refresh", true, true);
@@ -219,7 +232,7 @@ void initSerial() {
 
 void initDisplay() {
     if (!display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_I2C_ADDR)) {
-        ERROR_HALT("SSD1306 allocation failed.");
+        errorHalt("SSD1306 allocation failed.");
     }
     delay(250);
     resetScreen();
@@ -243,7 +256,7 @@ void initWifi() {
 
 void initFs() {
     if (!LittleFS.begin()) {
-        ERROR_HALT("Error occurred while mounting LittleFS.");
+        errorHalt("Error occurred while mounting LittleFS.");
     }
     delay(50);
 }
