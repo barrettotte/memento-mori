@@ -14,20 +14,36 @@
 #include "config.h"
 #include "hourglass.h"
 
+/*** constants ***/
+
 #define DISPLAY_BUFFER_SIZE 32
 #define CONFIG_BUFFER_SIZE 64
+
 #define NTP_PACKET_SIZE 48
 #define NTP_PORT 123
-#define UTC_STEP 0.25f
+
 #define EDIT_LINE_Y DISPLAY_HEIGHT - 24
-#define CONFIG_JSON_CAPACITY JSON_OBJECT_SIZE(3) // 1 object with 3 members
+#define DISPLAY_PAD 4
+
+#define UTC_STEP 0.25f
+#define UTC_MIN -12.0f
+#define UTC_MAX 14.0f
 
 // https://www.unixtimestamp.com/index.php
 #define UNIX_SECS_PER_DAY   86400
 #define UNIX_SECS_PER_MONTH 2629743  // 30.44 days
 #define UNIX_SECS_PER_YEAR  31556926 // 365.24 days
 
+#define CONFIG_JSON_CAPACITY JSON_OBJECT_SIZE(3) // 1 object with 3 members
+
+const char* clockFormat = "%04d-%02d-%02d %02d:%02d:%02d"; // YYYY-MM-DD hh:mm:ss
+const char* dateFormat = "%04d-%02d-%02d";                 // YYYY-MM-DD
+const char* percentLeftFormat = "%02.10lf %%";
+const char* hoursLeftFormat = "%.6lf h";
+
 #define errorHalt(s) Serial.println(s); while(1) {}
+
+/*** structs/types ***/
 
 enum state {
     STATE_IDLE_TIME,  // show current date/time
@@ -112,7 +128,12 @@ void unixTimeToDate(int unixTime, char* dateBuffer) {
     sprintf(dateBuffer, dateFormat, year(unixTime), month(unixTime), day(unixTime));
 }
 
-uint8_t loadConfig() {
+void getTimeRemaining(time_t total, time_t remaining, double* percent, double* hours) {
+    *percent = (remaining / (1.0 * total) * 100);
+    *hours = remaining / (1.0 * SECS_PER_HOUR);
+}
+
+int loadConfig() {
     int result = 0;
     char configBuffer[CONFIG_BUFFER_SIZE];
 
@@ -137,9 +158,9 @@ uint8_t loadConfig() {
 }
 
 void saveConfig() {
+    Serial.println("Saving config");
     File f = LittleFS.open(configPath, "w");
-    f.printf("{\"utc\":%.2f,\"birth\":%lld,\"death\":%lld}", 
-        config.utcOffset, config.birth, config.death);
+    f.printf("{\"utc\":%.2f,\"birth\":%lld,\"death\":%lld}", config.utcOffset, config.birth, config.death);
     f.close();
 }
 
@@ -147,6 +168,7 @@ void saveConfig() {
 
 void sendNtpPacket(IPAddress &ip) {
     memset(packetBuffer, 0, NTP_PACKET_SIZE);
+
     // https://www.meinbergglobal.com/english/info/ntp-packet.htm
     packetBuffer[0] = 0b11100011; // Leap Indicator (LI), version, mode
     packetBuffer[1] = 0;          // Stratum (type of clock) - 0=unspecified
@@ -165,7 +187,6 @@ void sendNtpPacket(IPAddress &ip) {
 
 time_t getNtpTime() {
     IPAddress ntpServerIp;
-    Serial.println("Fetching time from NTP server.");
 
     while (udp.parsePacket() > 0) {
         // discard previously received packets
@@ -193,7 +214,6 @@ time_t getNtpTime() {
 }
 
 void resyncNtp() {
-    Serial.println("Resync NTP.");
     setTime(getNtpTime());
     printTime();
 }
@@ -226,32 +246,40 @@ void drawTime() {
 }
 
 void drawHourglassAnimation() {
-    display.drawBitmap(
-        DISPLAY_WIDTH - HOURGLASS_WIDTH - 4,
-        (DISPLAY_HEIGHT / 2) - (HOURGLASS_HEIGHT / 2),
-        hourglassFrames[hourglassIdx++], HOURGLASS_WIDTH, HOURGLASS_HEIGHT, WHITE);
+    int16_t x = DISPLAY_WIDTH - HOURGLASS_WIDTH - DISPLAY_PAD;
+    int16_t y = (DISPLAY_HEIGHT / 2) - (HOURGLASS_HEIGHT / 2);
+
+    display.drawBitmap(x, y, hourglassFrames[hourglassIdx++], HOURGLASS_WIDTH, HOURGLASS_HEIGHT, WHITE);
 
     if (hourglassIdx >= HOURGLASS_FRAMES) {
         hourglassIdx = 0;
     }
 }
 
+void drawTimeRemaining(time_t total, time_t remaining) {
+    double p, h;
+    getTimeRemaining(total, remaining, &p, &h);
+
+    display.setCursor(DISPLAY_PAD, 30);
+    display.printf(percentLeftFormat, p);
+    display.setCursor(DISPLAY_PAD, 54);
+    display.printf(hoursLeftFormat, h);
+}
+
 void drawYearProgressPage() {
-    drawCenteredText("Year Progress", true, false);
+    drawCenteredText("Year Remaining", true, false);
     drawHourglassAnimation();
+
+    time_t start = CalendarYrToTm(year(now())) * UNIX_SECS_PER_YEAR; // 01/01/2023
+    time_t end = start + UNIX_SECS_PER_YEAR;                         // 01/01/2024
+
+    drawTimeRemaining(end - start, end - now());
 }
 
 void drawLifeProgressPage() {
     drawCenteredText("Life Remaining", true, false);
     drawHourglassAnimation();
-
-    time_t total = config.death - config.birth;
-    time_t remaining = config.death - now();
-
-    display.setCursor(4, 30);
-    display.printf("%02.10lf %%", (remaining / (1.0 * total)) * 100);
-    display.setCursor(4, 54);
-    display.printf("%.6lf h\n", remaining / 3600.0);
+    drawTimeRemaining(config.death - config.birth, config.death - now());
 }
 
 void drawDateEditLines() {
@@ -456,9 +484,10 @@ void handleEncoderPress() {
             }
             break;
         default:
+            // nop
             break;
     }
-    if (currState >= 3) {
+    if (currState >= STATE_SHOW_UTC) {
         drawPage();
     }
 }
@@ -510,12 +539,14 @@ void initWifi() {
 
     Serial.printf("Connecting to WiFi [%s]", _WIFI_SSID);
     display.setCursor(0, 3);
-    display.printf("Connecting to WiFi\n\n%s\n\n...", _WIFI_SSID);
+    display.printf("Connecting to WiFi\n\n%s\n\n", _WIFI_SSID);
     display.display();
 
     while (WiFi.status() != WL_CONNECTED) {
         delay(1000);
         Serial.printf(".");
+        display.print(".");
+        display.display();
     }
     Serial.printf("IP => %s\n", WiFi.localIP().toString().c_str());
     
@@ -572,16 +603,17 @@ void setup() {
     setSyncProvider(getNtpTime);
     setSyncInterval(NTP_SYNC_SECS);
 
-    // init globals
-    pageRange.imin = STATE_IDLE_TIME;
-    pageRange.imax = STATE_SHOW_NTP;
-    utcRange.fmin = -12.0f;
-    utcRange.fmax = 14.0f;
-
     if (timeStatus() != timeSet) {
         setTime(getNtpTime());
     }
     drawTime();
+
+    // init globals
+    pageRange.imin = STATE_IDLE_TIME;
+    pageRange.imax = STATE_SHOW_NTP;
+    utcRange.fmin = UTC_MIN;
+    utcRange.fmax = UTC_MAX;
+
     pinMode(LED_BUILTIN, OUTPUT);
 }
 
@@ -589,7 +621,7 @@ void loop() {
     currMs = millis();
 
     if (timeStatus() != timeNotSet) {
-        if ((currState < 3) && now() != prevTimeDisplayed) {
+        if ((currState < STATE_SHOW_UTC) && now() != prevTimeDisplayed) {
             prevTimeDisplayed = now();
             drawPage();
         }
