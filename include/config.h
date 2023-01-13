@@ -10,9 +10,9 @@
 #define DISPLAY_SCL D4
 
 // note: encoder inputs need to be debounced with 0.1µF caps
-#define ENCODER_CLK D5
-#define ENCODER_DT D6
-#define ENCODER_SW D7
+#define ENCODER_CLK D5  // A
+#define ENCODER_DT  D6  // B
+#define ENCODER_SW  D7  // C
 
 #define DEBOUNCE_MS 250          // default debounce input
 #define DISPLAY_INTERVAL_MS 1000 // update time display once a second
