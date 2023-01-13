@@ -227,7 +227,7 @@ void drawTime() {
 
 void drawHourglassAnimation() {
     display.drawBitmap(
-        (DISPLAY_WIDTH / 2) - (HOURGLASS_WIDTH / 2),
+        DISPLAY_WIDTH - HOURGLASS_WIDTH - 4,
         (DISPLAY_HEIGHT / 2) - (HOURGLASS_HEIGHT / 2),
         hourglassFrames[hourglassIdx++], HOURGLASS_WIDTH, HOURGLASS_HEIGHT, WHITE);
 
@@ -242,8 +242,16 @@ void drawYearProgressPage() {
 }
 
 void drawLifeProgressPage() {
-    drawCenteredText("Life Progress", true, false);
+    drawCenteredText("Life Remaining", true, false);
     drawHourglassAnimation();
+
+    time_t total = config.death - config.birth;
+    time_t remaining = config.death - now();
+
+    display.setCursor(4, 30);
+    display.printf("%02.10lf %%", (remaining / (1.0 * total)) * 100);
+    display.setCursor(4, 54);
+    display.printf("%.6lf h\n", remaining / 3600.0);
 }
 
 void drawDateEditLines() {
