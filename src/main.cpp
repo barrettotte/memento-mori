@@ -18,7 +18,14 @@
 #define CONFIG_BUFFER_SIZE 64
 #define NTP_PACKET_SIZE 48
 #define NTP_PORT 123
+#define UTC_STEP 0.25f
+#define EDIT_LINE_Y DISPLAY_HEIGHT - 24
 #define CONFIG_JSON_CAPACITY JSON_OBJECT_SIZE(3) // 1 object with 3 members
+
+// https://www.unixtimestamp.com/index.php
+#define UNIX_SECS_PER_DAY   86400
+#define UNIX_SECS_PER_MONTH 2629743  // 30.44 days
+#define UNIX_SECS_PER_YEAR  31556926 // 365.24 days
 
 #define errorHalt(s) Serial.println(s); while(1) {}
 
@@ -46,12 +53,18 @@ struct timer {
 };
 
 struct range {
-    int min;
-    int max;
+    union {
+        int imin;
+        float fmin;
+    };
+    union {
+        int imax;
+        float fmax;
+    };
 };
 
 struct configuration {
-    int utcOffset;
+    float utcOffset;
     time_t birth;
     time_t death;
 };
@@ -76,12 +89,15 @@ byte packetBuffer[NTP_PACKET_SIZE];
 char displayBuffer[DISPLAY_BUFFER_SIZE];
 uint8_t utcOffset;
 
+range pageRange;
+range utcRange;
+
 state prevState = STATE_IDLE_YEAR;
 state currState = STATE_IDLE_TIME;
 time_t prevTimeDisplayed = 0;
-uint8_t hourglassIdx = 0;
 
-range pageRange;
+uint8_t hourglassIdx = 0;
+uint8_t editIdx = 0;
 
 unsigned long currMs = 0;
 
@@ -90,6 +106,10 @@ unsigned long currMs = 0;
 void printTime() {
     Serial.printf(clockFormat, year(), month(), day(), hour(), minute(), second());
     Serial.println();
+}
+
+void unixTimeToDate(int unixTime, char* dateBuffer) {
+    sprintf(dateBuffer, dateFormat, year(unixTime), month(unixTime), day(unixTime));
 }
 
 uint8_t loadConfig() {
@@ -118,7 +138,7 @@ uint8_t loadConfig() {
 
 void saveConfig() {
     File f = LittleFS.open(configPath, "w");
-    f.printf("{\"utc\":%d,\"birth\":%lld,\"death\":%lld}", 
+    f.printf("{\"utc\":%.2f,\"birth\":%lld,\"death\":%lld}", 
         config.utcOffset, config.birth, config.death);
     f.close();
 }
@@ -184,7 +204,7 @@ void resetDisplay() {
     display.clearDisplay();
     display.setCursor(0, 0);
     display.setTextColor(WHITE);
-    display.setTextSize(1);
+    display.setTextSize(WHITE);
 }
 
 void drawCenteredText(String text, bool horizontal, bool vertical) {
@@ -209,7 +229,7 @@ void drawHourglassAnimation() {
     display.drawBitmap(
         (DISPLAY_WIDTH / 2) - (HOURGLASS_WIDTH / 2),
         (DISPLAY_HEIGHT / 2) - (HOURGLASS_HEIGHT / 2),
-        hourglassFrames[hourglassIdx++], HOURGLASS_WIDTH, HOURGLASS_HEIGHT, 1);
+        hourglassFrames[hourglassIdx++], HOURGLASS_WIDTH, HOURGLASS_HEIGHT, WHITE);
 
     if (hourglassIdx >= HOURGLASS_FRAMES) {
         hourglassIdx = 0;
@@ -226,31 +246,50 @@ void drawLifeProgressPage() {
     drawHourglassAnimation();
 }
 
+void drawDateEditLines() {
+    switch (editIdx) {
+        case 0:
+            display.drawLine(35, EDIT_LINE_Y, 56, EDIT_LINE_Y, WHITE); // year
+            break;
+        case 1:
+            display.drawLine(64, EDIT_LINE_Y, 72, EDIT_LINE_Y, WHITE); // month
+            break;
+        case 2:
+            display.drawLine(82, EDIT_LINE_Y, 90, EDIT_LINE_Y, WHITE); // day
+            break;
+        default:
+            Serial.printf("Warning: date edit index reached %d\n", editIdx);
+            break;
+    }
+}
+
 void drawUtcPage(bool edit) {
     if (edit) {
         drawCenteredText("Set UTC Offset", true, false);
+        display.drawLine(42, EDIT_LINE_Y, 85, EDIT_LINE_Y, WHITE);
     } else {
         drawCenteredText("UTC Offset", true, false);
     }
     memset(displayBuffer, 0, DISPLAY_BUFFER_SIZE);
-    sprintf(displayBuffer, "%d", config.utcOffset);
+    sprintf(displayBuffer, "% 02.2f", config.utcOffset);
     drawCenteredText(displayBuffer, true, true);
 }
 
 void drawBirthPage(bool edit) {
     if (edit) {
+        drawDateEditLines();
         drawCenteredText("Set Birth Date", true, false);
     } else {
         drawCenteredText("Birth Date", true, false);
     }
     memset(displayBuffer, 0, DISPLAY_BUFFER_SIZE);
-    // TODO: convert unix timestamp to date for display
-    sprintf(displayBuffer, "%lld", config.birth);
+    unixTimeToDate(config.birth, displayBuffer);
     drawCenteredText(displayBuffer, true, true);
 }
 
 void drawDeathPage(bool edit) {
     if (edit) {
+        drawDateEditLines();
         drawCenteredText("Set Estimated", true, false);
         display.setCursor(0, display.getCursorY() + 1);
         drawCenteredText("Death Date", true, false);
@@ -260,8 +299,7 @@ void drawDeathPage(bool edit) {
         drawCenteredText("Death Date", true, false);
     }
     memset(displayBuffer, 0, DISPLAY_BUFFER_SIZE);
-    // TODO: convert unix timestamp to date for display
-    sprintf(displayBuffer, "%lld", config.death);
+    unixTimeToDate(config.death, displayBuffer);
     drawCenteredText(displayBuffer, true, true);
 }
 
@@ -305,47 +343,84 @@ void drawPage() {
 
 /*** encoder ***/
 
-void scrollPage() {
+direction readEncoderDirection() {
     if (digitalRead(ENCODER_DT) != encoder.currClk) {
         encoder.dir = CCW;
     } else {
         encoder.dir = CW;
     }
-    int nextState = (int) currState;
-    nextState += encoder.dir;
+    return encoder.dir;
+}
+
+void scrollPage() {
+    int nextState = currState + encoder.dir;
 
     // wraparound states
-    if (nextState < pageRange.min) {
-        nextState = pageRange.max;
-    } else if (nextState > pageRange.max) {
-        nextState = pageRange.min;
+    if (nextState < pageRange.imin) {
+        nextState = pageRange.imax;
+    } else if (nextState > pageRange.imax) {
+        nextState = pageRange.imin;
     }
     prevState = currState;
     currState = (state) nextState;
+}
 
-    drawPage();
+void editUtc() {
+    config.utcOffset += (UTC_STEP * encoder.dir); // 15 minute step
+
+    if (config.utcOffset < utcRange.fmin) {
+        config.utcOffset = utcRange.fmin;
+    } else if (config.utcOffset > utcRange.fmax) {
+        config.utcOffset = utcRange.fmax;
+    }
+}
+
+void editDate(time_t& t) {
+    switch (editIdx) {
+        case 0:
+            t += UNIX_SECS_PER_YEAR * encoder.dir;
+            break;
+        case 1:
+            t += UNIX_SECS_PER_MONTH * encoder.dir;
+            break;
+        case 2:
+            t += UNIX_SECS_PER_DAY * encoder.dir;
+            break;
+        default:
+            Serial.printf("Warning: date edit index reached %d\n", editIdx);
+            break;
+    }
 }
 
 void handleEncoderMove() {
-    if (currState > 6) {
-        // TODO: change setting (UTC offset, birth, death)
-    } else {
-        scrollPage();
+    readEncoderDirection();
+
+    switch(currState) {
+        case STATE_SET_UTC:
+            editUtc();
+            break;
+        case STATE_SET_BIRTH:
+            editDate(config.birth);
+            break;
+        case STATE_SET_DEATH:
+            editDate(config.death);
+            break;
+        default:
+            scrollPage();
+            break;
     }
+    drawPage();
 }
 
 void handleEncoderPress() {
     switch (currState) {
         case STATE_SHOW_UTC:
-            Serial.println("Started editing UTC offset!");
             currState = STATE_SET_UTC;
             break;
         case STATE_SHOW_BIRTH:
-            Serial.println("Started editing birth date!");
             currState = STATE_SET_BIRTH;
             break;
         case STATE_SHOW_DEATH:
-            Serial.println("Started editing death date!");
             currState = STATE_SET_DEATH;
             break;
         case STATE_SHOW_NTP:
@@ -354,19 +429,25 @@ void handleEncoderPress() {
             drawPage();
             break;
         case STATE_SET_UTC:
-            Serial.println("Done editing UTC offset!");
             currState = STATE_SHOW_UTC;
+            saveConfig();
+            resyncNtp();
             break;
         case STATE_SET_BIRTH:
-            Serial.println("Done editing birth date!");
-            currState = STATE_SHOW_BIRTH;
+            if (++editIdx >= 3) {
+                currState = STATE_SHOW_BIRTH;
+                saveConfig();
+                editIdx = 0;
+            }
             break;
         case STATE_SET_DEATH:
-            Serial.println("Done editing death date!");
-            currState = STATE_SHOW_DEATH;
+            if (++editIdx >= 3) {
+                currState = STATE_SHOW_DEATH;
+                saveConfig();
+                editIdx = 0;
+            }
             break;
         default:
-            Serial.printf("Encoder pressed -> state=%d\n", currState);
             break;
     }
     if (currState >= 3) {
@@ -484,8 +565,14 @@ void setup() {
     setSyncInterval(NTP_SYNC_SECS);
 
     // init globals
-    pageRange = {STATE_IDLE_TIME, STATE_SHOW_NTP};
+    pageRange.imin = STATE_IDLE_TIME;
+    pageRange.imax = STATE_SHOW_NTP;
+    utcRange.fmin = -12.0f;
+    utcRange.fmax = 14.0f;
 
+    if (timeStatus() != timeSet) {
+        setTime(getNtpTime());
+    }
     drawTime();
     pinMode(LED_BUILTIN, OUTPUT);
 }

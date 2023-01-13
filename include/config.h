@@ -25,6 +25,6 @@ const char* dateFormat = "%04d-%02d-%02d"; // YYYY-MM-DD
 const char* ntpServer = "time.nist.gov";
 
 const char* configPath = "/config.json";
-#define UTC_OFFSET_DEFAULT -5    // ETC
-#define BIRTH_DEFAULT  820472400 // 1996-01-01 00:00:00
-#define DEATH_DEFAULT 3345080400 // 2076-01-01 00:00:00
+#define UTC_OFFSET_DEFAULT -5.0f // ETC
+#define BIRTH_DEFAULT  820515600 // 1996-01-01 12:00:00
+#define DEATH_DEFAULT 3345123600 // 2076-01-01 12:00:00
