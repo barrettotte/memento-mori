@@ -6,8 +6,8 @@
 #define DISPLAY_HEIGHT 64
 #define DISPLAY_RESET -1 // share Arduino reset pin
 #define DISPLAY_I2C_ADDR 0x3c
-#define DISPLAY_SDA D3
-#define DISPLAY_SCL D4
+#define DISPLAY_SDA D2
+#define DISPLAY_SCL D1
 
 // note: encoder inputs need to be debounced with 0.1µF caps
 #define ENCODER_CLK D5  // A
