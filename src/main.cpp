@@ -634,4 +634,5 @@ void loop() {
         handleEncoderPress();
         encoder.pressed = false;
     }
+    delay(10);
 }
