@@ -2,3 +2,5 @@ include/secrets.h
 
 .pio
 .vscode
+
+*.gcode
