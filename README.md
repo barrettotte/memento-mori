@@ -21,6 +21,7 @@ A reminder to stop wasting time.
   - Birth date (click to edit)
   - Estimated death date (click to edit)
   - Force NTP refresh (click to refresh)
+- Small hourglass animation on year and life remaining screens
 
 ## Images
 
