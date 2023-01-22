@@ -6,6 +6,8 @@ A reminder to stop wasting time.
 
 <img src="docs/images/hourglass.gif" alt="hourglass" width="50%" height="50%"/>
 
+<img src="docs/images/desk.jpg" alt="desk" width="50%" height="50%"/>
+
 ## Summary
 
 - Clock synced via NTP (syncs every 30 minutes)
